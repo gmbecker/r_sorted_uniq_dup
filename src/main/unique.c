@@ -598,6 +598,8 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
     case LGLSXP:
 	// special case logical code here, maybe
     case INTSXP:
+	// integer only has one NA value which can be assessed by ==
+	// we do not need to do any special handling here at all for NAs
 	sorted = INTEGER_IS_SORTED(x);
 	na_last = !KNOWN_NA_1ST(sorted);
 	
@@ -605,61 +607,78 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	    itmp = INTEGER_ELT(x, n - 1);
 	    seen_na = itmp == NA_INTEGER;
 	    v[n - 1] = FALSE;
-	    if(na_last) {
+	    /* if(na_last) { */
 		ITERATE_BY_REGION_PARTIAL_REV(x, xptr, idx, nb, int,
 					      INTEGER, n-1, n - 1, {
-						  block_havena = xptr[nb - 1] == NA_INTEGER ? TRUE : FALSE;
-						  if(block_havena) {
-						      if(seen_na) {
-							  v[idx + nb - 1] = TRUE;
-						      } else {
-							  v[idx + nb - 1] = FALSE;
-							  seen_na = TRUE;
-						      }
-						      for(R_xlen_t k = nb - 1; k > 0; k--) {
-							  if(xptr[k] == NA_INTEGER)
-							      v[idx + nb - k - 1] = TRUE;
-							  else
-							      v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE;
-						      }
-						  } else { // no NAs in this block, no need to further check for them
-						      v[idx + nb - 1] = (xptr[nb - 1] == itmp) ? TRUE : FALSE;
+						  v[idx + nb - 1] = (xptr[nb - 1] == itmp) ? TRUE : FALSE;
+						  /* block_havena = xptr[nb - 1] == NA_INTEGER ? TRUE : FALSE; */
+						  /* // we have NAs in this block, we need to do the checking */
+						  /* if(block_havena) { */
+						  /*     if(!seen_na) */
+						  /* 	  seen_na = TRUE; */
+						  /*     for(R_xlen_t k = nb - 1; k > 0; k--) { */
+						  /* 	  if(xptr[k] == NA_INTEGER) */
+						  /* 	      v[idx + nb - k - 1] = TRUE; //seen_na guaranteed TRUE here */
+						  /* 	  else */
+						  /* 	      v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE; */
+						  /*     } */
+						  /* } else { // no NAs in this block, no need to further check for them */
 						      for(R_xlen_t k = nb - 1; k > 0; k--) {
 							  v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE;
 						      }
-						  }
+						  /* } */
+						  itmp = xptr[0];
 					      });
-	    } else { // NA first
-		ITERATE_BY_REGION_PARTIAL_REV(x, xptr, idx, nb, int,
-					      INTEGER, n-1, n - 1, {
-						  block_havena = xptr[0] == NA_INTEGER ? TRUE : FALSE;
-						  if(block_havena) {
-						      for(R_xlen_t k = nb - 1; k >= 0; k--) {
-							  if(xptr[k] == NA_INTEGER)
-							      v[idx + nb - k - 1] = TRUE;
-							  else
-							      v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE;
-						      }
-						  } else { // no NAs in this block, no need to further check for them
-						      v[idx + nb - 1] = (xptr[nb - 1] == itmp) ? TRUE : FALSE;
-						      for(R_xlen_t k = nb - 1; k > 0; k--) {
-							  v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE;
-						      }
-						  }
-					      });
+	    /* } else { // NA first */
+		/* ITERATE_BY_REGION_PARTIAL_REV(x, xptr, idx, nb, int, */
+		/* 			      INTEGER, n-1, n - 1, { */
+		/* 				  v[idx + nb - 1] = (xptr[nb - 1] == itmp) ? TRUE : FALSE; */
+		/* 				  /\* block_havena = xptr[0] == NA_INTEGER ? TRUE : FALSE; *\/ */
+		/* 				  /\* // we have do do the NA checking for this block *\/ */
+		/* 				  /\* if(block_havena) { *\/ */
+		/* 				  /\*     for(R_xlen_t k = nb - 1; k >= 0; k--) { *\/ */
+		/* 				  /\* 	  if(xptr[k] == NA_INTEGER) { *\/ */
+		/* 				  /\* 	      v[idx + nb - k - 1] = seen_na; *\/ */
+		/* 				  /\* 	      if(!seen_na) *\/ */
+		/* 				  /\* 		  seen_na = TRUE; *\/ */
+		/* 				  /\* 	  } else { *\/ */
+		/* 				  /\* 	      v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE; *\/ */
+		/* 				  /\* 	  } *\/ */
+		/* 				  /\*     } *\/ */
+		/* 				  /\* } else { // no NAs in this block, no need to further check for them *\/ */
+
+		/* 				      for(R_xlen_t k = nb - 1; k > 0; k--) { */
+		/* 					  v[idx + nb - k - 1] = (xptr[k] == xptr[k + 1]) ? TRUE : FALSE; */
+		/* 				      } */
+		/* 				  /\* } *\/ */
+		/* 				  itmp = xptr[0]; */
+		/* 			      }); */
 
 
-	    }
-	} else {
+	    /* } */
+	} else { // !from_last
 	    itmp = INTEGER_ELT(x, 0);
 	    v[0] = FALSE;
-	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, int,
-				      INTEGER, 1, n - 1, {
-					  v[idx] = (xptr[0] == itmp) ? TRUE : FALSE;
-					  for(R_xlen_t k = 1; k < nb; k++) {
-					      v[idx + k] = (xptr[k] == xptr[k - 1]) ? TRUE : FALSE;
-					  }
-				      });
+	    /* if(na_last) { */
+		ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, int,
+					  INTEGER, 1, n - 1, {
+					      /* block_havena = (xptr[nb - 1] == NA_INTEGER); */
+					      /* if(block_havena) { */
+					      /* 	  v[idx] = (xptr[0] == itmp) ? TRUE : FALSE; */
+					      /* 	  for(R_xlen_t k = 1; k < nb; k++) { */
+					      /* 	      v[idx + k] = (xptr[k] == xptr[k - 1]) ? TRUE : FALSE; */
+					      /* 	  } */
+						  
+					      /* } else { //no NAs in this block */
+						  v[idx] = (xptr[0] == itmp) ? TRUE : FALSE;
+						  for(R_xlen_t k = 1; k < nb; k++) {
+						      v[idx + k] = (xptr[k] == xptr[k - 1]) ? TRUE : FALSE;
+						  }
+					      /* } */
+					  });
+	    /* } else { //na first */
+
+	    /* } */
 	}
 	break;
     case REALSXP:
