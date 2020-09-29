@@ -600,7 +600,7 @@ R_xlen_t real_count_NAs(SEXP x) {
 // x MUST be sorted to call this function. no further confirmation is made
 static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 {
-    R_xlen_t n = XLENGTH(x), numnas, rlstrt, nastrt, naend;
+    R_xlen_t n = XLENGTH(x), numnas, rlstrt, na_left, na_right;
     SEXP ans = PROTECT(allocVector(LGLSXP, n));
     if(n <2 ) {
 	for(R_xlen_t i = 0; i < n; i++)
@@ -609,9 +609,8 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	return ans;
     }
     int *v = LOGICAL(ans), itmp, sorted;
-    double rtmp = 0.0, rcur = 0.0;
+    double rtmp = 0.0;
     Rboolean seen_na = FALSE, seen_nan = FALSE,
-	block_havena = TRUE, val = FALSE,
 	nas1st= TRUE;
     switch(TYPEOF(x)) {
     case LGLSXP:
@@ -648,13 +647,19 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	numnas = real_count_NAs(x);
 	sorted = REAL_IS_SORTED(x);
 	nas1st = KNOWN_NA_1ST(sorted);
-	nastrt = nas1st ? numnas -1 : n - 1;
-	naend = nas1st ? 0 : n - numnas;
-	printf("nastrt %ld naend %ld\n", nastrt, naend);
-
+	if(numnas > 0) {
+	    
+	    na_right = nas1st ? numnas -1 : n - 1;
+	    na_left = nas1st ? 0 : n - numnas;
+	} else {
+	    na_right = -2;
+	    na_left = -1;
+	}
+	rlstrt = nas1st ? numnas : 0;
+	
 	if(from_last) {
 	    if(numnas > 0) {
-		for(R_xlen_t i = nastrt; i >= naend; i--) {
+		for(R_xlen_t i = na_right; i > na_right - numnas; i--) {
 		    rtmp = REAL_ELT(x, i);
 		    if(R_IsNA(rtmp)) {
 			v[i] = seen_na;
@@ -666,14 +671,14 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 		}
 	    }
 	    if(numnas < n) {
-		rlstrt = nas1st ? numnas : 0;
-		printf("rlstrt %ld  numnas %ld n - numnas %ld rlstrt + n - numnas - 1: %ld",
-		       rlstrt, numnas, n - numnas, rlstrt + n - numnas  - 1);
+
 		rtmp = REAL_ELT(x, rlstrt);
 		v[rlstrt + n - numnas - 1] = FALSE;
-		
+		printf("n %ld rlstrt %ld n-numnas-1 %ld\n",
+		       n, rlstrt, n - numnas - 1);
 		// none of these are NAN values
 		ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
+					   // note the +1 here
 					   rlstrt + 1, n - numnas -1, {
 					       // use first value in this buffer to check last value in last buffer
 						   v[idx - 1] = (xptr[0] == rtmp);
@@ -684,8 +689,11 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 					   });
 	    }
 	} else { // !from_last
+	    printf("n %ld numnas: %ld na_left: %ld na_right %ld: rlstrt %ld n-numnas-1 %ld\n",
+		   n, numnas, na_left, na_right,  rlstrt, n - numnas - 1);
+	    
 	    if(numnas > 0) {
-		for(R_xlen_t i = naend; i <= nastrt; i++) {
+		for(R_xlen_t i = na_left; i < na_left + numnas; i++) {
 		    rtmp = REAL_ELT(x, i);
 		    if(R_IsNA(rtmp)) {
 			v[i] = seen_na;
@@ -697,14 +705,12 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 		}
 	    }
 	    if(numnas < n) {
-		rlstrt = nas1st ? numnas : 0;
-		
 		rtmp = REAL_ELT(x, rlstrt);
 		v[rlstrt] = FALSE;
 
 		// none of these are NAN values
 		ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
-					   rlstrt + 1, n - numnas, {
+					   rlstrt + 1, n - numnas -1, {
 					       // use last value in last buffer to check first value in this buffer
 					       v[idx] = (xptr[0] == rtmp);
 					       for(R_xlen_t k = 1; k < nb; k++) {
