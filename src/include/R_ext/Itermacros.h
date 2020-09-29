@@ -26,6 +26,7 @@
   and periodic interrupt checks.
  */
 
+#include <stdio.h>
 #ifndef  R_EXT_ITERMACROS_H_
 #define  R_EXT_ITERMACROS_H_
 
@@ -219,12 +220,15 @@
 #define ITERATE_BY_REGION_PARTIAL_REV0(sx, px, idx, nb, etype, vtype,	\
 				   strt, nfull, expr) do {		\
 	etype __ibr_buf__[GET_REGION_BUFSIZE];				\
-	R_xlen_t __ibr_end__ = strt - nfull;				\
-	R_xlen_t nb;							\
-	for (R_xlen_t idx = strt; idx > __ibr_end__; idx -= nb) {	\
-	    nb = idx - __ibr_end__  > GET_REGION_BUFSIZE ?		\
-		GET_REGION_BUFSIZE :  idx - __ibr_end__;			\
-	    etype *px = (etype *) GET_REGION_PTR(sx, idx - nb, nb,		\
+	R_xlen_t __ibr_end__ = strt - (nfull);			\
+	R_xlen_t nb = (nfull > GET_REGION_BUFSIZE) ?			\
+	    GET_REGION_BUFSIZE : nfull;					\
+	R_xlen_t idx;							\
+	for (R_xlen_t end = strt; end > __ibr_end__; end -= nb) { \
+	    nb = end - __ibr_end__  > GET_REGION_BUFSIZE ?		\
+		GET_REGION_BUFSIZE :  end - __ibr_end__;		\
+	    idx = end - nb;						\
+	    etype *px = (etype *) GET_REGION_PTR(sx, idx, nb,		\
 	                                         __ibr_buf__, vtype);	\
 	    expr							\
 	 }							        \
@@ -234,10 +238,10 @@
 				  strt, nfull, expr) do {		\
 	const etype *px = (etype *) DATAPTR_OR_NULL(sx);		\
 	if (px != NULL) {						\
-	    R_xlen_t idx = strt;					\
+	    R_xlen_t nb = nfull;	      				\
+	    R_xlen_t idx = strt - (nb - 1);				\
 	    (void) idx; /* variable may be unused in expr */		\
-	    R_xlen_t nb = nfull;					\
-	    px += strt - nb;							\
+	    px += idx;							\
 	    expr							\
 	}								\
 	else ITERATE_BY_REGION_PARTIAL_REV0(sx, px, idx, nb, etype, vtype,	\
