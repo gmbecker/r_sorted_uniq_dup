@@ -76,3 +76,5 @@ full_check(xdbl[1])
 
 full_check(x[1:5])
 full_check(xdbl[1:5])
+
+full_check(rep(NA_real_, 1200))

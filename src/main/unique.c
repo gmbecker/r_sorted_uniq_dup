@@ -558,10 +558,49 @@ SEXP duplicated(SEXP x, Rboolean from_last)
     return ans;
 }
 
+R_xlen_t real_count_NAs(SEXP x) {
+    R_xlen_t n = XLENGTH(x);
+    int sorted = REAL_IS_SORTED(x);
+    int nas1st = KNOWN_NA_1ST(sorted);
+    double rtmp;
+    R_xlen_t ret, nanpos, lowedge, highedge;
+    rtmp = nas1st ? REAL_ELT(x, 0) : REAL_ELT(x,n - 1);
+    if(ISNAN(rtmp)) {
+	if((nas1st && ISNAN(REAL_ELT(x, n-1))) ||
+	   (!nas1st && ISNAN(REAL_ELT(x, 0))))
+	    return n;
+	
+	nanpos = n/2; // integer division
+	lowedge = 0;
+	highedge = n-1;
+	while(highedge > lowedge+1) {
+	    rtmp = REAL_ELT(x, nanpos);
+	    if((nas1st &&  ISNAN(rtmp)) ||
+	       (!nas1st && !ISNAN(rtmp))) {
+		lowedge = nanpos;
+	    } else {
+		highedge = nanpos;
+	    }
+		nanpos = (highedge + lowedge) /2;
+	}
+	if(nas1st) {
+	    nanpos = lowedge;
+	    ret = nanpos + 1;
+	} else {
+	    nanpos = highedge;
+	    ret = n - nanpos;
+	}
+    } else {
+	ret = 0;
+    }
+
+    return ret;
+}
+
 // x MUST be sorted to call this function. no further confirmation is made
 static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 {
-    R_xlen_t n = XLENGTH(x), nanpos = 0, lowedge = 0, highedge = 0, iterstart, iternum, nonnapos, posmod = 0;
+    R_xlen_t n = XLENGTH(x), numnas, rlstrt, nastrt, naend;
     SEXP ans = PROTECT(allocVector(LGLSXP, n));
     if(n <2 ) {
 	for(R_xlen_t i = 0; i < n; i++)
@@ -606,159 +645,78 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	}
 	break;
     case REALSXP:
-	// We use the ITERATE_BY_REGION_PARTIAL{_REV}0 variant to force chunking
-	// Chunking avoids needing an entirely separate No NA fastpath because
-	// we can check if the block has any NaN values outside the tight loop
-	// This matters a lot for big vectors with few NA/NaN values.
+	numnas = real_count_NAs(x);
 	sorted = REAL_IS_SORTED(x);
 	nas1st = KNOWN_NA_1ST(sorted);
-	posmod = nas1st ? 1 : -1;
+	nastrt = nas1st ? numnas -1 : n - 1;
+	naend = nas1st ? 0 : n - numnas;
+	printf("nastrt %ld naend %ld\n", nastrt, naend);
 
-	rtmp = nas1st ? REAL_ELT(x, 0) : REAL_ELT(x,n - 1);
-//	    v[n - 1] = FALSE;
-	if(ISNAN(rtmp)) {
-	    nanpos = n/2; // integer division
-	    lowedge = 0;
-	    highedge = n-1;
-	    while(highedge > lowedge+1) {
-		/* printf("lowedge: %ld, highedge: %ld, isnan: %d\n", */
-		/*        lowedge, highedge, ISNAN(REAL_ELT(x, nanpos))); */
-		rtmp = REAL_ELT(x, nanpos);
-		if((nas1st &&  ISNAN(rtmp)) ||
-		   (!nas1st && !ISNAN(rtmp))) {
-		    lowedge = nanpos;
-		} else {
-		    highedge = nanpos;
-		}
-		nanpos = (highedge + lowedge) /2;
-	    }
-	    if(nas1st) {
-		nanpos = lowedge;
-		iterstart = nanpos+1;
-		iternum = n - iterstart;
-		if(from_last)
-		    v[n-1] = FALSE;
-		else
-		    v[iterstart] = FALSE;
-	    } else {
-		nanpos = highedge;
-		iterstart = 0;
-		iternum = nanpos;// +1 for pos to count, -1 to get to non-na value
-		if(from_last)
-		    v[iternum - 1] = FALSE;
-		else
-		    v[0] = FALSE;
-	    }
-	} else {
-	    nanpos = nas1st ? -1:n;
-	    iterstart = 0;
-	    iternum = n; // we will do one separately
-	    if(from_last)
-		v[n-1] = FALSE;
-	    else
-		v[0] = FALSE;
-	}
-	
-	printf("edge of NAs: %ld, iterstart: %ld; iternum %ld [%ld %d]\n", nanpos, iterstart, iternum , nanpos,
-	       (nanpos > n-1 || nanpos < 0) ? -999: ISNAN(REAL_ELT(x, nanpos)));
-	
 	if(from_last) {
-	    	    //these are all NAN values
-	    if(nas1st) {
-		for(R_xlen_t j = nanpos; j >= 0; j--) {
-		    rcur = REAL_ELT(x, j);
-		    if(R_IsNA(rcur)) {
-			v[j] = seen_na;
+	    if(numnas > 0) {
+		for(R_xlen_t i = nastrt; i >= naend; i--) {
+		    rtmp = REAL_ELT(x, i);
+		    if(R_IsNA(rtmp)) {
+			v[i] = seen_na;
 			seen_na = TRUE;
 		    } else {
-			v[j] = seen_nan;
-			seen_nan = TRUE;
-		    }
-		}
-	    } else {
-		for(R_xlen_t j = n-1; j >= nanpos; j--) {
-		    rcur = REAL_ELT(x, j);
-		    if(R_IsNA(rcur)) {
-			v[j] = seen_na;
-			seen_na = TRUE;
-		    } else {
-			v[j] = seen_nan;
+			v[i] = seen_nan;
 			seen_nan = TRUE;
 		    }
 		}
 	    }
-
-	    rtmp = REAL_ELT(x, iterstart);
-
-	    // none of these are NAN values
-	    ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
-				       iterstart + 1, iternum -1, {
-					   if(idx > 0) {
-					       v[idx - 1] = (xptr[0] == rtmp);
-					       /* printf("edge check - v element: %ld value: %d\n", */
-					       /*        idx - 1, v[idx-1]); */
-					   }
-					   /* for(R_xlen_t k = 0; k < nb - 1; k++) { */
-					   /*     v[idx + k] = (int) (xptr[k] == xptr[k+1]) ? TRUE : FALSE; */
-					   /* } */
-					   for(R_xlen_t k = nb -2; k >= 0; k--)
+	    if(numnas < n) {
+		rlstrt = nas1st ? numnas : 0;
+		printf("rlstrt %ld  numnas %ld n - numnas %ld rlstrt + n - numnas - 1: %ld",
+		       rlstrt, numnas, n - numnas, rlstrt + n - numnas  - 1);
+		rtmp = REAL_ELT(x, rlstrt);
+		v[rlstrt + n - numnas - 1] = FALSE;
+		
+		// none of these are NAN values
+		ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
+					   rlstrt + 1, n - numnas -1, {
+					       // use first value in this buffer to check last value in last buffer
+						   v[idx - 1] = (xptr[0] == rtmp);
+					       // skip last element because we don't have that info yet
+					       for(R_xlen_t k = nb -2; k >= 0; k--)
 					       v[idx + k] = (xptr[k+1] == xptr[k]); 
-					   /* printf("last bit: nb: %ld, pos %ld, vals [%f, %f]\n", */
-					   /* 	  nb, idx + nb - 1, xptr[nb-2], xptr[nb-1]); */
-					   /* } */
-					   rtmp = xptr[nb - 1]; 
-					   
-				       });
+					       rtmp = xptr[nb - 1]; 
+					   });
+	    }
 	} else { // !from_last
-
-	    //these are all NAN values
-	    if(nas1st) {
-		for(R_xlen_t j = 0; j <= nanpos; j++) {
-		    rcur = REAL_ELT(x, j);
-		    if(R_IsNA(rcur)) {
-			v[j] = seen_na;
+	    if(numnas > 0) {
+		for(R_xlen_t i = naend; i <= nastrt; i++) {
+		    rtmp = REAL_ELT(x, i);
+		    if(R_IsNA(rtmp)) {
+			v[i] = seen_na;
 			seen_na = TRUE;
 		    } else {
-			v[j] = seen_nan;
-			seen_nan = TRUE;
-		    }
-		}
-	    } else {
-		for(R_xlen_t j = nanpos; j <=n-1; j++) {
-		    rcur = REAL_ELT(x, j);
-		    if(R_IsNA(rcur)) {
-			v[j] = seen_na;
-			seen_na = TRUE;
-		    } else {
-			v[j] = seen_nan;
+			v[i] = seen_nan;
 			seen_nan = TRUE;
 		    }
 		}
 	    }
+	    if(numnas < n) {
+		rlstrt = nas1st ? numnas : 0;
+		
+		rtmp = REAL_ELT(x, rlstrt);
+		v[rlstrt] = FALSE;
 
-	    if(iterstart >= 0 && iterstart <= n-1) {
-		v[iterstart] = FALSE;
-		rtmp = REAL_ELT(x, iterstart);
+		// none of these are NAN values
+		ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
+					   rlstrt + 1, n - numnas, {
+					       // use last value in last buffer to check first value in this buffer
+					       v[idx] = (xptr[0] == rtmp);
+					       for(R_xlen_t k = 1; k < nb; k++) {
+						   v[idx + k] = (int) (xptr[k] == xptr[k-1]) ? TRUE : FALSE;
+					       }
+					       rtmp = xptr[nb - 1];
+					   });
 	    }
-
-	    // none of these are NAN values
-	    ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
-				       iterstart + 1, iternum, {
-					   v[idx] = (xptr[0] == rtmp);
-					       /* printf("edge check - v element: %ld value: %d\n", */
-					       /*        idx - 1, v[idx-1]); */
-					   for(R_xlen_t k = 1; k < nb; k++) {
-					       v[idx + k] = (int) (xptr[k] == xptr[k-1]) ? TRUE : FALSE;
-					   }
-					   /* printf("last bit: nb: %ld, pos %ld, vals [%f, %f]\n", */
-					   /* 	  nb, idx + nb - 1, xptr[nb-2], xptr[nb-1]); */
-					   /* } */
-					   rtmp = xptr[nb - 1];
-					   
-				       });
-
 	}
 	break;
+
+
     }
     UNPROTECT(1); //ans
     return ans;
