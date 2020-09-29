@@ -598,6 +598,15 @@ R_xlen_t real_count_NAs(SEXP x) {
 }
 
 // x MUST be sorted to call this function. no further confirmation is made
+// We keep around the last element from the previous buffer in order to
+// do the right thing at the edges.
+// For fromLast we calculate the answer for the previous elements position by
+//   comparing it to the first element in our current buffer, and punt on the
+//   last element in our buffer until the next one (or the end)
+//
+// For !fromLast we calculate the answer for the first position in our current
+//   buffer by comparing it to the previous last value
+// we compare the previous element to the start of 
 static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 {
     R_xlen_t n = XLENGTH(x), numnas, rlstrt, na_left, na_right;
@@ -620,30 +629,40 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	// no special handling of NA required
 	sorted = INTEGER_IS_SORTED(x);
 	if(from_last) {
-	    itmp = INTEGER_ELT(x, n - 1);
-	    seen_na = itmp == NA_INTEGER;
+	    // first element is handled speciall, requires seeing into future
+	    // last element is automatically FALSE
+	    itmp = INTEGER_ELT(x, 0);
 	    v[n - 1] = FALSE;
-	    ITERATE_BY_REGION_PARTIAL_REV(x, xptr, idx, nb, int,
-					  INTEGER, n-2, n - 1, {
-					      v[idx + nb - 1] = (xptr[nb - 1] == itmp);
-					      for(R_xlen_t k = nb - 2; k >= 0; k--) {
-						  v[idx + k] = (xptr[k] == xptr[k + 1]);
-					      }
-					      itmp = xptr[0];
-					  });
+	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, int, INTEGER,
+				      // note the +1 here
+				      1, n- 1, {
+					  // use first value in this buffer to check last value in last buffer
+					  v[idx - 1] = (xptr[0] == itmp);
+					  // skip last element because we don't have that info yet
+					  for(R_xlen_t k = nb -2; k >= 0; --k)
+					      v[idx + k] = (xptr[k+1] == xptr[k]); 
+					  itmp = xptr[nb - 1]; 
+				      });
+
 	} else { // !from_last
 	    itmp = INTEGER_ELT(x, 0);
 	    v[0] = FALSE;
 	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, int,
 				      INTEGER, 1, n - 1, {
 					  v[idx] = (xptr[0] == itmp);
-					  for(R_xlen_t k = 1; k < nb; k++) {
+					  for(R_xlen_t k = 1; k < nb; ++k) {
 					      v[idx + k] = (xptr[k] == xptr[k - 1]);
 						  }
 				      });
 	}
 	break;
     case REALSXP:
+	// we need separate handling of NAs/NaNs here because it
+	// NAs and NaNs are not sorted so we can't just look at
+	// adjacent value. We count total NANs (both types) and
+	// handle them in a tight loop, after which we process
+	// non-NAN values exactly the same as integers
+	// 
 	numnas = real_count_NAs(x);
 	sorted = REAL_IS_SORTED(x);
 	nas1st = KNOWN_NA_1ST(sorted);
@@ -658,71 +677,59 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	rlstrt = nas1st ? numnas : 0;
 	
 	if(from_last) {
-	    if(numnas > 0) {
-		for(R_xlen_t i = na_right; i > na_right - numnas; i--) {
-		    rtmp = REAL_ELT(x, i);
-		    if(R_IsNA(rtmp)) {
-			v[i] = seen_na;
-			seen_na = TRUE;
-		    } else {
-			v[i] = seen_nan;
-			seen_nan = TRUE;
-		    }
+	    for(R_xlen_t i = na_right; i > na_right - numnas; --i) {
+		rtmp = REAL_ELT(x, i);
+		if(R_IsNA(rtmp)) {
+		    v[i] = seen_na;
+		    seen_na = TRUE;
+		} else {
+		    v[i] = seen_nan;
+		    seen_nan = TRUE;
 		}
 	    }
 	    if(numnas < n) {
 
 		rtmp = REAL_ELT(x, rlstrt);
 		v[rlstrt + n - numnas - 1] = FALSE;
-		printf("n %ld rlstrt %ld n-numnas-1 %ld\n",
-		       n, rlstrt, n - numnas - 1);
 		// none of these are NAN values
-		ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
+		ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, double, REAL,
 					   // note the +1 here
 					   rlstrt + 1, n - numnas -1, {
 					       // use first value in this buffer to check last value in last buffer
 						   v[idx - 1] = (xptr[0] == rtmp);
 					       // skip last element because we don't have that info yet
-					       for(R_xlen_t k = nb -2; k >= 0; k--)
-					       v[idx + k] = (xptr[k+1] == xptr[k]); 
+					       for(R_xlen_t k = nb -2; k >= 0; --k)
+						   v[idx + k] = (xptr[k+1] == xptr[k]); 
 					       rtmp = xptr[nb - 1]; 
 					   });
 	    }
 	} else { // !from_last
-	    printf("n %ld numnas: %ld na_left: %ld na_right %ld: rlstrt %ld n-numnas-1 %ld\n",
-		   n, numnas, na_left, na_right,  rlstrt, n - numnas - 1);
-	    
-	    if(numnas > 0) {
-		for(R_xlen_t i = na_left; i < na_left + numnas; i++) {
-		    rtmp = REAL_ELT(x, i);
-		    if(R_IsNA(rtmp)) {
-			v[i] = seen_na;
-			seen_na = TRUE;
-		    } else {
-			v[i] = seen_nan;
-			seen_nan = TRUE;
-		    }
+	    for(R_xlen_t i = na_left; i < na_left + numnas; ++i) {
+		rtmp = REAL_ELT(x, i);
+		if(R_IsNA(rtmp)) {
+		    v[i] = seen_na;
+		    seen_na = TRUE;
+		} else {
+		    v[i] = seen_nan;
+		    seen_nan = TRUE;
 		}
 	    }
 	    if(numnas < n) {
 		rtmp = REAL_ELT(x, rlstrt);
 		v[rlstrt] = FALSE;
 
-		// none of these are NAN values
-		ITERATE_BY_REGION_PARTIAL0(x, xptr, idx, nb, double, REAL,
+		ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, double, REAL,
 					   rlstrt + 1, n - numnas -1, {
 					       // use last value in last buffer to check first value in this buffer
 					       v[idx] = (xptr[0] == rtmp);
-					       for(R_xlen_t k = 1; k < nb; k++) {
-						   v[idx + k] = (int) (xptr[k] == xptr[k-1]) ? TRUE : FALSE;
+					       for(R_xlen_t k = 1; k < nb; ++k) {
+						   v[idx + k] = (xptr[k] == xptr[k-1]);
 					       }
 					       rtmp = xptr[nb - 1];
 					   });
 	    }
 	}
 	break;
-
-
     }
     UNPROTECT(1); //ans
     return ans;
