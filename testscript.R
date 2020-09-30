@@ -3,12 +3,15 @@ nnas = 513
 x = sample(1e3, 1e7, replace = TRUE)
 xdbl = sample(seq(1, 5e2, by = .5), 1e7, replace = TRUE)
 
-check_one <- function(vec, numnas = 513, nalast = TRUE, fromlast = FALSE, show.timings = TRUE, incl_sorttime = FALSE) {
+check_one <- function(vec, numnas = 513,  numinfs = 0, nalast = TRUE, fromlast = FALSE, show.timings = TRUE, incl_sorttime = FALSE) {
     if(length(vec) > 0 && numnas > 0) {
         navals <- if(is(vec, "integer")) NA_integer_ else c(NA_real_, NaN)
         vec[1:numnas] = rep(navals, length.out = numnas)
     }
-    cat("vector [len", length(vec), "cl:", class(vec), "nalast:", nalast, "fromlast: ", fromlast,  "numNAs:", sum(is.na(vec)), "]\n")
+    if(!is(vec, "integer") && length(vec) > numnas + numinfs && numinfs > 0) {
+        vec[(numnas + 1):(numnas + numinfs)] = rep(c(Inf, -Inf), length.out = numinfs)
+    }
+    cat("vector [len", length(vec), "cl:", class(vec), "nalast:", nalast, "fromlast: ", fromlast,  "numNAs:", sum(is.na(vec)),  "numInfs:", sum(!is.na(vec) & !is.finite(vec)), "]\n")
     sorttime <- system.time({y <- sort(vec, na.last = nalast)})[["elapsed"]]
     z <- y
     if(length(y) > 0)
@@ -33,35 +36,29 @@ check_one <- function(vec, numnas = 513, nalast = TRUE, fromlast = FALSE, show.t
     TRUE
 }
 
-full_check = function(vec, show.timings = TRUE) {
 
-
-
-    check_one(vec, 0, TRUE, TRUE, show.timings)
-    if(length(vec) >0)
-        check_one(vec, 1, TRUE, TRUE, show.timings)
-    if(length(vec) > 512)
-        check_one(vec, 513, TRUE, TRUE, show.timings)
-
-    check_one(vec, 0, FALSE, TRUE, show.timings)
-    if(length(vec) >0)
-        check_one(vec, 1, FALSE, TRUE, show.timings)
-    if(length(vec) > 512)
-        check_one(vec, 513, FALSE, TRUE, show.timings)
-
-    check_one(vec, 0, TRUE, FALSE, show.timings)
-    if(length(vec) >0)
-        check_one(vec, 1, TRUE, FALSE, show.timings)
-    if(length(vec) > 512)
-        check_one(vec, 513, TRUE, FALSE, show.timings)
-
-    check_one(vec, 0, FALSE, FALSE, show.timings)
-    if(length(vec) >0)
-        check_one(vec, 1, FALSE, FALSE, show.timings)
-    if(length(vec) > 512)
-        check_one(vec, 513, FALSE, FALSE, show.timings)
+multicheck <- function(vec, nalast, fromlast, show.timings = TRUE) {
+    check_one(vec, 0, 0, nalast = nalast, fromlast = fromlast, show.timings)
+    if(length(vec) >4) {
+        check_one(vec, 1, 0, nalast = nalast, fromlast = fromlast, show.timings)
+        if(!is(vec, "integer"))
+            check_one(vec, 2, 2, nalast = nalast, fromlast = fromlast, show.timings)
+    }
+    if(length(vec) > 1100) {
+        check_one(vec, 513, 0, nalast = nalast, fromlast = fromlast, show.timings)
+        if(!is(vec, "integer"))
+            check_one(vec, 513, 515, nalast = nalast, fromlast = fromlast, show.timings)
+    }
     TRUE
 }
+full_check = function(vec, show.timings = TRUE) {
+    multicheck(vec, TRUE, TRUE, show.timings)
+    multicheck(vec, TRUE, FALSE, show.timings)
+    multicheck(vec, FALSE, TRUE, show.timings)
+    multicheck(vec, FALSE, FALSE, show.timings)
+    TRUE
+}
+
 
 full_check(x)
 full_check(xdbl)
@@ -78,3 +75,5 @@ full_check(x[1:5])
 full_check(xdbl[1:5])
 
 full_check(rep(NA_real_, 1200))
+
+full_check(c(Inf, -Inf, -Inf))

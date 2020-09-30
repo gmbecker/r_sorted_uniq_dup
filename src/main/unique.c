@@ -596,6 +596,33 @@ R_xlen_t real_count_NAs(SEXP x) {
 
     return ret;
 }
+// x, v, from_last already defined
+#define SORTED_DUP_NONNANS(start, nsize, tmpvar, eetype, vvtype)		\
+    do {								\
+	tmpvar = vvtype##_ELT(x, start);				\
+	if(from_last) {							\
+	    v[start + nsize] = FALSE;					\
+	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, eetype, vvtype,	\
+				      start + 1, nsize, {		\
+					  v[idx - 1] = (xptr[0] == tmpvar); \
+					  printf("idx %ld nb %ld nsize %ld", \
+						 idx, nb, nsize);	\
+					  for(R_xlen_t k = nb -2; k >= 0; k--) \
+					      v[idx + k] = (xptr[k+1] == xptr[k]); \
+					  tmpvar = xptr[nb - 1];	\
+				  });					\
+	} else { /* !from_last */					\
+	    v[start] = FALSE;						\
+	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, eetype,		\
+				      vvtype, start + 1, nsize, {	\
+					  v[idx] = (xptr[0] == tmpvar);	\
+					  for(R_xlen_t k = 1; k < nb; ++k) { \
+					      v[idx + k] = (xptr[k] == xptr[k - 1]); \
+					  }				\
+				      tmpvar = xptr[nb - 1];		\
+				      });				\
+	}								\
+    } while(0)
 
 // x MUST be sorted to call this function. no further confirmation is made
 // We keep around the last element from the previous buffer in order to
@@ -625,36 +652,8 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
     case LGLSXP:
 	// special case logical code here, maybe
     case INTSXP:
-	// integer only has one NA value which can be assessed by ==
-	// no special handling of NA required
-	sorted = INTEGER_IS_SORTED(x);
-	if(from_last) {
-	    // first element is handled speciall, requires seeing into future
-	    // last element is automatically FALSE
-	    itmp = INTEGER_ELT(x, 0);
-	    v[n - 1] = FALSE;
-	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, int, INTEGER,
-				      // note the +1 here
-				      1, n- 1, {
-					  // use first value in this buffer to check last value in last buffer
-					  v[idx - 1] = (xptr[0] == itmp);
-					  // skip last element because we don't have that info yet
-					  for(R_xlen_t k = nb -2; k >= 0; --k)
-					      v[idx + k] = (xptr[k+1] == xptr[k]); 
-					  itmp = xptr[nb - 1]; 
-				      });
-
-	} else { // !from_last
-	    itmp = INTEGER_ELT(x, 0);
-	    v[0] = FALSE;
-	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, int,
-				      INTEGER, 1, n - 1, {
-					  v[idx] = (xptr[0] == itmp);
-					  for(R_xlen_t k = 1; k < nb; ++k) {
-					      v[idx + k] = (xptr[k] == xptr[k - 1]);
-						  }
-				      });
-	}
+	// integers have no NANs, NA can be compared by ==
+	SORTED_DUP_NONNANS(0, n-1, itmp, int, INTEGER);
 	break;
     case REALSXP:
 	// we need separate handling of NAs/NaNs here because it
@@ -667,7 +666,6 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	sorted = REAL_IS_SORTED(x);
 	nas1st = KNOWN_NA_1ST(sorted);
 	if(numnas > 0) {
-	    
 	    na_right = nas1st ? numnas -1 : n - 1;
 	    na_left = nas1st ? 0 : n - numnas;
 	} else {
@@ -687,22 +685,6 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 		    seen_nan = TRUE;
 		}
 	    }
-	    if(numnas < n) {
-
-		rtmp = REAL_ELT(x, rlstrt);
-		v[rlstrt + n - numnas - 1] = FALSE;
-		// none of these are NAN values
-		ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, double, REAL,
-					   // note the +1 here
-					   rlstrt + 1, n - numnas -1, {
-					       // use first value in this buffer to check last value in last buffer
-						   v[idx - 1] = (xptr[0] == rtmp);
-					       // skip last element because we don't have that info yet
-					       for(R_xlen_t k = nb -2; k >= 0; --k)
-						   v[idx + k] = (xptr[k+1] == xptr[k]); 
-					       rtmp = xptr[nb - 1]; 
-					   });
-	    }
 	} else { // !from_last
 	    for(R_xlen_t i = na_left; i < na_left + numnas; ++i) {
 		rtmp = REAL_ELT(x, i);
@@ -714,21 +696,9 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 		    seen_nan = TRUE;
 		}
 	    }
-	    if(numnas < n) {
-		rtmp = REAL_ELT(x, rlstrt);
-		v[rlstrt] = FALSE;
-
-		ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, double, REAL,
-					   rlstrt + 1, n - numnas -1, {
-					       // use last value in last buffer to check first value in this buffer
-					       v[idx] = (xptr[0] == rtmp);
-					       for(R_xlen_t k = 1; k < nb; ++k) {
-						   v[idx + k] = (xptr[k] == xptr[k-1]);
-					       }
-					       rtmp = xptr[nb - 1];
-					   });
-	    }
 	}
+	if(numnas < n)
+	    SORTED_DUP_NONNANS(rlstrt, n - numnas - 1, rtmp, double, REAL);
 	break;
     }
     UNPROTECT(1); //ans
