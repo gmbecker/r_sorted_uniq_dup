@@ -602,8 +602,6 @@ R_xlen_t sorted_real_count_NAs(SEXP x) {
     do {								\
 	tmpvar = vvtype##_ELT(x, start);				\
 	if(from_last) {							\
-	    /* printf("start %ld niter %ld start+niter %ld start+niter2 %ld", \ */ \
-	    /* 	   start, niter, start+niter, (R_xlen_t) start + niter);\ */\
 	    v[start + niter] = FALSE;					\
 	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, eetype, vvtype,	\
 				      start + 1, niter, {		\
@@ -655,8 +653,7 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
     case LGLSXP:
 	// special case logical code here, maybe
     case INTSXP:
-	// integers have no NANs, NA_INTEGER can just be treated as
-	// a value
+	// no NANs, NA_INTEGER can just be treated as a value
 	SORTED_DUP_NONNANS(0, n-1, itmp, int, INTEGER);
 	break;
     case REALSXP:
@@ -691,7 +688,7 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 		    seen_nan = TRUE;
 		}
 	    }
-	}
+	}=
 	if(numnas < n) {
 	    startpos = nas1st ? numnas : 0;
 	    
