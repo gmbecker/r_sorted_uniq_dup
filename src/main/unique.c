@@ -688,7 +688,7 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 		    seen_nan = TRUE;
 		}
 	    }
-	}=
+	}
 	if(numnas < n) {
 	    startpos = nas1st ? numnas : 0;
 	    
