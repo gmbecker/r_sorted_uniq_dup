@@ -558,6 +558,8 @@ SEXP duplicated(SEXP x, Rboolean from_last)
     return ans;
 }
 
+// use binary scan to find edge of non-NANs
+// then calculate count from that.
 // x must be sorted, no check is done.
 R_xlen_t sorted_real_count_NAs(SEXP x) {
     R_xlen_t n = XLENGTH(x);
@@ -591,7 +593,7 @@ R_xlen_t sorted_real_count_NAs(SEXP x) {
 	    nanpos = highedge;
 	    ret = n - nanpos;
 	}
-    } else {
+    } else { // !ISNAN(rtmp)
 	ret = 0;
     }
 
@@ -623,16 +625,17 @@ R_xlen_t sorted_real_count_NAs(SEXP x) {
 	}								\
     } while(0)
 
-// x MUST be sorted to call this function. no further confirmation is made
+
 // We keep around the last element from the previous buffer in order to
 // do the right thing at the edges.
-// For fromLast we calculate the answer for the previous elements position by
-//   comparing it to the first element in our current buffer, and punt on the
+// For fromLast we calculate the answer for the previous element's position by
+//   comparing it to the first element in current buffer, and punt on the
 //   last element in our buffer until the next one (or the end)
 //
 // For !fromLast we calculate the answer for the first position in our current
 //   buffer by comparing it to the previous last value
-// we compare the previous element to the start of 
+//
+// x MUST be sorted to call this function. no further confirmation is made
 static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 {
     R_xlen_t n = XLENGTH(x), numnas, na_left = -1, na_right = -1,
@@ -664,34 +667,55 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	if(numnas > 0) {
 	    na_right = nas1st ? numnas -1 : n - 1;
 	    na_left = nas1st ? 0 : n - numnas;
-	} 
-	
-	if(from_last) {
-	    for(R_xlen_t i = na_right; i > na_right - numnas; --i) {
-		rtmp = REAL_ELT(x, i);
-		if(R_IsNA(rtmp)) {
-		    v[i] = seen_na;
-		    seen_na = TRUE;
-		} else {
-		    v[i] = seen_nan;
-		    seen_nan = TRUE;
-		}
-	    }
-	} else { // !from_last
-	    for(R_xlen_t i = na_left; i < na_left + numnas; ++i) {
-		rtmp = REAL_ELT(x, i);
-		if(R_IsNA(rtmp)) {
-		    v[i] = seen_na;
-		    seen_na = TRUE;
-		} else {
-		    v[i] = seen_nan;
-		    seen_nan = TRUE;
-		}
+	    if(from_last) { // all NANs so no need for check
+#define SORTED_NAN_DUPLICATED_CHECK(chkstart, chkcond, chkiter) do {	\
+		    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb,		\
+					      double, REAL, na_left, numnas, { \
+			    for(R_xlen_t i = chkstart; chkcond; chkiter) { \
+				if(R_IsNA(xptr[i])) {			\
+				    v[idx  + i] = seen_na;		\
+				    seen_na = TRUE;			\
+				} else { /* Non-"R NA" NaNs */		\
+				    v[idx + i] = seen_nan;		\
+				    seen_nan = TRUE;			\
+				}					\
+			    }						\
+					      });			\
+		} while(0)
+		SORTED_NAN_DUPLICATED_CHECK(nb-1, i >= 0, i--);
+		
+	    /* for(R_xlen_t i = na_right; i > na_right - numnas; --i) { */
+	    /* 	rtmp = REAL_ELT(x, i); */
+	    /* 	if(R_IsNA(rtmp)) { */
+	    /* 	    v[i] = seen_na; */
+	    /* 	    seen_na = TRUE; */
+	    /* 	} else { */
+	    /* 	    v[i] = seen_nan; */
+	    /* 	    seen_nan = TRUE; */
+	    /* 	} */
+	    /* } */
+	    } else { // !from_last
+		SORTED_NAN_DUPLICATED_CHECK(0, i < nb, i++);
+		/* ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, double, REAL, na_left, numnas, { */
+		/* 	    for(R_xlen_t i = 0; i < nb; i++) { */
+		/* 		SORTED_NAN_DUPLICATED_CHECK */
+		/* 	    } */
+		/* 	}); */
+		
+		/* for(R_xlen_t i = na_left; i < na_left + numnas; ++i) { */
+	    /* 	rtmp = REAL_ELT(x, i); */
+	    /* 	if(R_IsNA(rtmp)) { */
+	    /* 	    v[i] = seen_na; */
+	    /* 	    seen_na = TRUE; */
+	    /* 	} else { */
+	    /* 	    v[i] = seen_nan; */
+	    /* 	    seen_nan = TRUE; */
+	    /* 	} */
+	    /* } */
 	    }
 	}
 	if(numnas < n) {
 	    startpos = nas1st ? numnas : 0;
-	    
 	    SORTED_DUP_NONNANS(startpos,
 			       n - numnas - 1, rtmp, double, REAL);
 	}
@@ -764,6 +788,80 @@ R_xlen_t any_duplicated(SEXP x, Rboolean from_last)
     UNPROTECT(1);
     return result;
 }
+
+// x, from_last already defined
+#define SORTED_ANYDUP_NONNANS(start, niter, tmpvar, eetype, vvtype, nprot) \
+    do {								\
+    tmpvar = vvtype##_ELT(x, start);					\
+    if(from_last) {							\
+	ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, eetype, vvtype,	\
+				  start + 1, niter, {			\
+				      for(R_xlen_t k = nb -2; k >= 0; k--) { \
+					  if(x[k+1] == xptr[k]) {	\
+					      UNPROTECT(nprot);		\
+					      return idx + k + 1;	\
+					  }				\
+				      }					\
+				      if (xptr[0] == tmpvar) {		\
+					  UNPROTECT(nprot);		\
+					  return idx; /* 1-based idx-1 */ \
+				      }					\
+				      tmpvar = xptr[nb - 1];		\
+				  });					\
+	return 0; /* no dups*/						\
+    } else { /* !from_last */						\
+	ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, eetype,		\
+				  vvtype, start + 1, niter, {		\
+				      if(xptr[0] == tmpvar) {		\
+					  UNPROTECT(nprot);		\
+					  return idx + 1;		\
+				      }					\
+				      for(R_xlen_t k = 1; k < nb; ++k) { \
+					  if(xptr[k] == xptr[k - 1]) {	\
+					      UNPROTECT(nprot);		\
+					      return idx + k + 1;	\
+					  }				\
+				      }					\
+				      tmpvar = xptr[nb - 1];		\
+				  });					\
+	return 0;							\
+    }									\
+    } while(0)
+		  
+
+
+/* R_xlen_t sorted_any_duplicated(SEXP x, Rboolean from_last) { */
+/*     int itmp; */
+/*     double rtmp; */
+/*     Rboolean seen_na = FALSE, seen_nan = FALSE; */
+/*     if(TYPEOF(x) == INTSXP) { */
+/* 	SORTED_ANYDUP_NONNANS(0, XLENGTH(x), itmp, int, INTEGER, 0); */
+/*     } else if(TYPEOF(x) == REALSXP) { */
+/* 	if(from_last) { */
+/* 	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, double, REAL, na_right, numnas, { */
+/* 		    for(R_xlen_t i = nb - 1; i>=0; i--) { */
+/* 			if(R_IsNA(xptr[i])) { */
+/* 			    if(seen_na) { */
+/* 				return idx + i + 1; */
+/* 			    } else { */
+/* 				seen_na = TRUE; */
+/* 			    } */
+/* 			} else { /\* Non-"R NA" NaNs *\/ */
+/* 			    if(seen_nan) { */
+/* 				return idx + i + 1; */
+/* 			    } else { */
+/* 				seen_nan = TRUE; */
+/* 			    } */
+/* 			} */
+/* 		    } */
+/* 		}); */
+
+
+/*     } */
+
+
+
+/* } */
 
 static SEXP duplicated3(SEXP x, SEXP incomp, Rboolean from_last, int nmax)
 {
