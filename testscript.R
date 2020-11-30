@@ -25,10 +25,13 @@ check_one <- function(vec, numnas = 513,  numinfs = 0, nalast = TRUE, fromlast =
     ztimed <- system.time({zd <- duplicated(z, fromLast = fromlast)})[["elapsed"]]
     ytimeu <- system.time({yu <- unique(y, fromLast = fromlast)})[["elapsed"]]
     ztimeu <- system.time({zu <- unique(z, fromLast = fromlast)})[["elapsed"]]
+    ytimea <- system.time({ya <- anyDuplicated(y, fromLast = fromlast)})[["elapsed"]]
+    ztimea <- system.time({za <- anyDuplicated(z, fromLast = fromlast)})[["elapsed"]]
     if(show.timings) {
         cat(
             "duplicated speedup: ", ztimed/(ytimed + if(incl_sorttime) sorttime else 0),"\n",
-            "unique speedup: ", ztimeu/(ytimeu + if(incl_sorttime) sorttime else 0), "\n")
+            "unique speedup: ", ztimeu/(ytimeu + if(incl_sorttime) sorttime else 0), "\n",
+            "anyDuplicated speedup: ", ztimea/(ytimea + if(incl_sorttime) sorttime else 0), "\n")
     }
     if(!identical(yd, zd)) {
         print(which(yd != zd))
@@ -90,6 +93,22 @@ full_check(rep(NA_real_, 1200))
 
 ## what happens with all non-finite
 full_check(c(Inf, -Inf, -Inf))
+
+
+## what happens for mostly non-duplicated
+
+w <- as.numeric(1:1e7)
+w2 <- w
+w2[2] <- w[1]
+
+w3 <- w
+w3[1e7 - 1] <- w3[1e7]
+
+
+full_check(w)
+full_check(w2)
+full_check(w3)
+
 
 z <- x
 class(z) <- "hahaha_no"
