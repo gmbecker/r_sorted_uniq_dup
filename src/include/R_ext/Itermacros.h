@@ -204,7 +204,7 @@
 	R_xlen_t nb = nfull > GET_REGION_BUFSIZE ?			\
 	    GET_REGION_BUFSIZE : nfull;					\
 	for (R_xlen_t idx = __ibr_n__ - nb; nb > 0; idx -= nb) {	\
-	    etype *px = (etype *) GET_REGION_PTR(sx, idx, nb,	\
+	    etype *px = (etype *) GET_REGION_PTR(sx, idx, nb,		\
 	                                         __ibr_buf__, vtype);	\
 	    expr							\
 	    nb = idx - strt > GET_REGION_BUFSIZE ?			\
@@ -222,10 +222,9 @@
 	    px += strt;							\
 	    expr							\
 	}								\
-	else ITERATE_BY_REGION_PARTIAL_REV0(sx, px, idx, nb, etype, vtype, \
+	else ITERATE_BY_REGION_PARTIAL0(sx, px, idx, nb, etype, vtype,	\
 					strt, nfull, expr);		\
     } while (0)
-
 
 #define ITERATE_BY_REGION_PARTIAL_REV(sx, px, idx, nb, etype, vtype,	\
 				      strt, nfull, expr) do {		\
@@ -237,10 +236,9 @@
 	    px += strt;							\
 	    expr							\
 	}								\
-	else ITERATE_BY_REGION_PARTIAL0(sx, px, idx, nb, etype, vtype,	\
-					strt, nfull, expr);		\
+	else ITERATE_BY_REGION_PARTIAL_REV0(sx, px, idx, nb, etype,	\
+					    vtype, strt, nfull, expr);	\
     } while (0)
-    
 
 #define ITERATE_BY_REGION(sx, px, idx, nb, etype, vtype, expr) do {	\
 	ITERATE_BY_REGION_PARTIAL(sx, px, idx, nb, etype, vtype,	\

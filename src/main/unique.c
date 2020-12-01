@@ -558,91 +558,121 @@ SEXP duplicated(SEXP x, Rboolean from_last)
     return ans;
 }
 
-// use binary scan to find edge of non-NANs
-// then calculate count from that.
-// x must be sorted, error otherwise.
-R_xlen_t sorted_real_count_NAs(SEXP x) {
+/*
+  binary scan to find edge of non-NANs then calculate count from that.
+  
+  NB: NANs are controlled during sort by na.last so testing specificially 
+  for R's NA is neither sufficient nor required.
+*/
+R_xlen_t sorted_real_count_NANs(SEXP x) {
     R_xlen_t n = XLENGTH(x);
+    if(n == 0)
+	return 0;
+    if (n == 1)
+	return ISNAN(REAL_ELT(x, 0));
+
     int sorted = REAL_IS_SORTED(x);
     if(!KNOWN_SORTED(sorted)) /* this should never happen! */
-	error("sorted_real_count_NAs got unsorted vector: this should not happen");
-    int nas1st = KNOWN_NA_1ST(sorted);
+	error("sorted_real_count_NANs got unsorted vector: this should not happen");
+
     double rtmp;
     R_xlen_t ret, nanpos, lowedge, highedge;
-    rtmp = nas1st ? REAL_ELT(x, 0) : REAL_ELT(x,n - 1);
-    if(ISNAN(rtmp)) { /* we have at least one */
-	/* quick check if they're all NaNs */
-	if((nas1st && ISNAN(REAL_ELT(x, n-1))) ||
-	   (!nas1st && ISNAN(REAL_ELT(x, 0))))
-	    return n;
-	
-	nanpos = n/2; // integer division
-	lowedge = 0;
-	highedge = n-1;
-	while(highedge > lowedge+1) {
-	    rtmp = REAL_ELT(x, nanpos);
-	    if((nas1st &&  ISNAN(rtmp)) ||
-	       (!nas1st && !ISNAN(rtmp))) {
-		lowedge = nanpos;
-	    } else {
-		highedge = nanpos;
-	    }
-	    nanpos = (highedge + lowedge) /2;
-	}
-	// exactly 1 of lowedge, highedge is an NAN position
-	// at this point
-	if(nas1st) {
-	    nanpos = lowedge;
-	    ret = nanpos + 1;
-	} else {
-	    nanpos = highedge;
-	    ret = n - nanpos;
-	}
-    } else { // !ISNAN(rtmp)
-	ret = 0;
-    }
+    int nas1st = KNOWN_NA_1ST(sorted);
+    rtmp = nas1st ? REAL_ELT(x, 0) : REAL_ELT(x, n - 1);
+    /* quick check if none are NANs */
+    if(!ISNAN(rtmp))
+	return 0;
+    /* quick check if they're all NaNs */
+    if((nas1st && ISNAN(REAL_ELT(x, n - 1))) ||
+       (!nas1st && ISNAN(REAL_ELT(x, 0))))
+	return n;
 
+    /* from here we have n >= 2 and at least 1 NAN and 1 non-NAN */
+    nanpos = n / 2; // integer division
+    lowedge = 0;
+    highedge = n - 1;
+
+    if(nas1st) {
+#define FIND_NAN_EDGE(yes, no, final) do {	                	\
+	    while(highedge > lowedge + 1) {				\
+		rtmp = REAL_ELT(x, nanpos);				\
+		if(ISNAN(rtmp))						\
+		    yes;						\
+		else							\
+		    no;							\
+		nanpos = (highedge + lowedge) / 2;			\
+	    }								\
+	    ret = final;						\
+	} while(0)
+	
+	FIND_NAN_EDGE(lowedge = nanpos, highedge = nanpos, lowedge + 1);
+    } else {
+	FIND_NAN_EDGE(highedge = nanpos, lowedge = nanpos, n - highedge);
+    }
     return ret;
 }
 
+#undef FIND_NAN_EDGE
 
-#define SORTED_DUP_NONNANS(start, niter, tmpvar, eetype, vvtype)	\
-    do {								\
+#define DUP_DO_ONE(x, y, ind) do {					\
+    if(x == y)								\
+	v[ind] = TRUE;							\
+    else								\
+	v[ind] = FALSE;							\
+    } while(0)
+
+// We keep final element (subject to from_last) from previous region
+// around to get right answer at the region edges
+#define SORTED_DUP_NONNANS(start, niter, tmpvar, eetype, vvtype) do {	\
 	if(from_last) {							\
 	    v[start + niter] = FALSE;					\
 	    tmpvar = vvtype##_ELT(x, start + niter);			\
-	    ITERATE_BY_REGION_PARTIAL_REV0(x, xptr, idx, nb, eetype,	\
-					   vvtype, start, niter, {	\
-		v[idx + nb - 1] = (xptr[nb - 1] == tmpvar);		\
-		for(R_xlen_t k = nb -2; k >= 0; k--)			\
-		    v[idx + k] = (xptr[k+1] == xptr[k]);		\
-		tmpvar = xptr[0];					\
-					   });				\
+	    ITERATE_BY_REGION_PARTIAL_REV(x, xptr, idx, nb, eetype,	\
+					  vvtype, start, niter, {	\
+					      DUP_DO_ONE(xptr[nb - 1],	\
+							 tmpvar,	\
+							 idx + nb - 1);	\
+					      for(R_xlen_t k = nb - 2; k >= 0; k--) { \
+						  DUP_DO_ONE(xptr[k + 1], \
+							     xptr[k],	\
+							     idx + k);	\
+					      }				\
+					      tmpvar = xptr[0];		\
+					  });				\
 	} else { /* !from_last */					\
 	    v[start] = FALSE;						\
 	    tmpvar = vvtype##_ELT(x, start);				\
 	    ITERATE_BY_REGION_PARTIAL(x, xptr, idx, nb, eetype,		\
 				      vvtype, start + 1, niter, {	\
-					  v[idx] = (xptr[0] == tmpvar);	\
-					  for(R_xlen_t k = 1; k < nb; ++k) { \
-					      v[idx + k] = (xptr[k] == xptr[k - 1]); \
+					  DUP_DO_ONE(xptr[0], tmpvar,	\
+						     idx);		\
+					  for(R_xlen_t k = 1; k < nb; k++) { \
+					      DUP_DO_ONE(xptr[k],	\
+							 xptr[k - 1],	\
+							 idx + k);	\
 					  }				\
 					  tmpvar = xptr[nb - 1];	\
 				      });				\
 	}								\
     } while(0)
 
+/* fast check if a known NAN is the specific one that is R's NA 
+   memcmp is bitwise so can exactly compare NANs where == won't
 
+   useful elsewhere??
+*/
+#define NAN_IS_R_NA(xptr) (memcmp(&NA_REAL, xptr, sizeof(double)) == 0)
 
+/* guaranteed to all be NANs
 
-/* we could get faster if we break out of the outer loop once
-   seen_na and seen_nan are both TRUE, but NANs not common
-   enough to justify it */
+   could break out of loop once seen_na, seen_nan both TRUE and just
+   memset. NANs not common enough in data to justify it.
+*/
 #define SORTED_DUP_NANS(itype, istart, icond, iter) do {		\
-	ITERATE_BY_REGION_##itype##0(x, xptr, idx, nb,			\
+	ITERATE_BY_REGION_##itype(x, xptr, idx, nb,			\
 				  double, REAL, na_left, numnas, {	\
 				      for(R_xlen_t i = istart; icond; iter) { \
-					  if(R_IsNA(xptr[i])) {		\
+					  if(NAN_IS_R_NA(xptr + i)) {	\
 					      v[idx  + i] = seen_na;	\
 					      seen_na = TRUE;		\
 					  } else {			\
@@ -653,54 +683,37 @@ R_xlen_t sorted_real_count_NAs(SEXP x) {
 				     });				\
     } while(0)
 
-// We keep around the last element from the previous buffer in order to
-// do the right thing at the edges.
-// For fromLast we calculate the answer for the previous element's position by
-//   comparing it to the first element in current buffer, and punt on the
-//   last element in our buffer until the next one (or the end)
-//
-// For !fromLast we calculate the answer for the first position in our current
-//   buffer by comparing it to the previous last value
-//
-// x MUST be sorted to call this function. error otherwise.
 static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 {
-    // n guaranteed >= 2
+    //  n guaranteed >= 2 from calling function (Duplicated)
     R_xlen_t n = XLENGTH(x), numnas, na_left = -1, startpos;
     SEXP ans = PROTECT(allocVector(LGLSXP, n));
     int *v = LOGICAL(ans), itmp, sorted;
-    double rtmp = 0.0;
+    double rtmp;
     Rboolean seen_na = FALSE, seen_nan = FALSE,
 	nas1st= TRUE;
-    if(n <2 ) {
-	for(R_xlen_t i = 0; i < n; i++)
-	    LOGICAL0(ans)[i] = FALSE;
-	UNPROTECT(1);
-	return ans;
-    }
-    
+
     switch(TYPEOF(x)) {
-    case LGLSXP:
-	// special case logical code here, maybe
     case INTSXP:
 	// no NANs, NA_INTEGER can just be treated as a value
 	sorted = INTEGER_IS_SORTED(x);
-	if(!KNOWN_SORTED(sorted)) /* this should never happen! */
+	if(!KNOWN_SORTED(sorted))
 	    error("sorted_Duplicated got unsorted vector: this should not happen");
-	SORTED_DUP_NONNANS(0, n-1, itmp, int, INTEGER);
+	SORTED_DUP_NONNANS(0, n - 1, itmp, int, INTEGER);
 	break;
     case REALSXP:
 	sorted = REAL_IS_SORTED(x);
 	if(!KNOWN_SORTED(sorted))
 	    error("sorted_Duplicated got unsorted vector: this should not happen");
-	// we need separate handling of NAs/NaNs here because 
-	// NAs and NaNs are considered equivalent for sorting but distinct
-	// for duplicated/unique
-	numnas = sorted_real_count_NAs(x);
+	/* separate handling of NAs/NaNs here because they're considered
+	   equivalent for sorting but distinct here.
+	*/
+	numnas = sorted_real_count_NANs(x);
 	nas1st = KNOWN_NA_1ST(REAL_IS_SORTED(x));
+	// we don't have to do these in order since we're returning the full vector
 	if(numnas > 0) {
 	    na_left = nas1st ? 0 : n - numnas;
-	    if(from_last) { // all NANs so no need for check
+	    if(from_last) {
 		SORTED_DUP_NANS(PARTIAL_REV, nb - 1, i >= 0, i--);
 	    } else { // !from_last
 		SORTED_DUP_NANS(PARTIAL, 0, i < nb, i++);
@@ -712,10 +725,22 @@ static SEXP sorted_Duplicated(SEXP x, Rboolean from_last, int nmax)
 	    SORTED_DUP_NONNANS(startpos, n - numnas - 1, rtmp, double, REAL);
 	}
 	break;
+    default:
+	error("sorted_Duplicated got unsupported type %d: this should not happen", TYPEOF(x));
     }
     UNPROTECT(1); //ans
     return ans;
 }
+
+#undef SORTED_DUP_NONNANS
+#undef SORTED_DUP_NANS
+#undef DUP_DO_ONE
+
+/* to add sorted fastpass support for new SEXP types modify sorted_Duplicated 
+   and sorted_any_Duplicated then add them here */
+#define DUP_KNOWN_SORTED(x)						\
+    ((TYPEOF(x) == INTSXP && KNOWN_SORTED(INTEGER_IS_SORTED(x))) ||	\
+     (TYPEOF(x) == REALSXP && KNOWN_SORTED(REAL_IS_SORTED(x))))
 
 static SEXP Duplicated(SEXP x, Rboolean from_last, int nmax)
 {
@@ -729,9 +754,7 @@ static SEXP Duplicated(SEXP x, Rboolean from_last, int nmax)
     else if (n == 1)
 	return ScalarLogical(FALSE);
     
-    if(ALTREP(x) &&
-       ((TYPEOF(x) == INTSXP && KNOWN_SORTED(INTEGER_IS_SORTED(x))) ||
-    	(TYPEOF(x) == REALSXP && KNOWN_SORTED(REAL_IS_SORTED(x))))) {
+    if(DUP_KNOWN_SORTED(x)) {
     	return sorted_Duplicated(x, from_last, nmax);
     }
     DUPLICATED_INIT;
@@ -761,14 +784,14 @@ static SEXP Duplicated(SEXP x, Rboolean from_last, int nmax)
  * sorted_any_duplicated macros for integers and non-NAN doubles 
  */
 #define SORTED_ANYDUP_NONNANS_FROM_LAST(start, count, tmpvar, eetype, vvtype) do { \
-	tmpvar = vvtype##_ELT(x, start + count);			\
+	tmpvar = vvtype##_ELT(x, start + count - 1);			\
 	ITERATE_BY_REGION_PARTIAL_REV(x, xptr, idx, nb, eetype, vvtype, \
 				      start, count - 1, {		\
 					  if(xptr[nb - 1] == tmpvar) {	\
-					      return idx + 1;		\
+					      return idx + nb;		\
 					  }				\
-					  for(R_xlen_t k = nb -2; k >= 0; k--) { \
-					      if(xptr[k+1] == xptr[k]) { \
+					  for(R_xlen_t k = nb - 2; k >= 0; k--) { \
+					      if(xptr[k + 1] == xptr[k]) { \
 						  return idx + k + 1;	\
 					      }				\
 					  }				\
@@ -782,79 +805,94 @@ static SEXP Duplicated(SEXP x, Rboolean from_last, int nmax)
 				  vvtype, start + 1, count - 1, {	\
 				      if(xptr[0] == tmpvar) {		\
 					      return idx + 1;		\
+				      }					\
+				      for(R_xlen_t k = 1; k < nb; k++) { \
+					  if(xptr[k] == xptr[k - 1]) {	\
+					      return idx + k + 1;	\
 					  }				\
-					  for(R_xlen_t k = 1; k < nb; ++k) { \
-					      if(xptr[k] == xptr[k - 1]) { \
-						  return idx + k + 1;	\
-					      }				\
-					  }				\
-					  tmpvar = xptr[nb - 1];	\
+				      }					\
+				      tmpvar = xptr[nb - 1];		\
 				  });					\
     } while(0)
 
 
-/*
- * itype is PARTIAL or PARTIAL_REV, istart, icond, iter 
- * are the start, condition and iteration of the for loop
- */
+/* itype is PARTIAL or PARTIAL_REV, istart, icond, iter 
+   are the start, condition and iteration of the for loop
+*/
+
 #define SORTED_ANYDUP_NANS(start, count, itype, istart, icond, iter) do { \
-	ITERATE_BY_REGION_##itype(x, xptr, idx, nb, double, REAL,	\
-				     start, count, {			\
-					 for(R_xlen_t i = istart; icond; iter) { \
-					     if(R_IsNA(xptr[i])) {	\
-						 if(seen_na) {		\
-						     return idx + i + 1; \
-						 } else {		\
-						     seen_na = TRUE;	\
-						 }			\
-					     } else {			\
-						 if(seen_nan) {		\
-						     return idx + i + 1; \
-						 } else {		\
-						     seen_nan = TRUE;	\
-						 }			\
-					     }				\
-					 }				\
-				  });					\
-	  } while(0)
+    ITERATE_BY_REGION_##itype(x, xptr, idx, nb, double, REAL,		\
+	start, count, {							\
+	for(R_xlen_t i = istart; icond; iter) {				\
+	    if(NAN_IS_R_NA(xptr + i)) {					\
+		if(seen_na) {						\
+		    return idx + i + 1;					\
+		} else {						\
+		    seen_na = TRUE;					\
+		}							\
+	    } else {							\
+		if(seen_nan) {						\
+		    return idx + i + 1;					\
+		} else {						\
+		    seen_nan = TRUE;					\
+		}							\
+	    }								\
+	}								\
+			      });					\
+    } while(0)
 
 
 R_xlen_t sorted_any_duplicated(SEXP x, Rboolean from_last) {
     int itmp, sorted;
     double rtmp;
     Rboolean seen_na = FALSE, seen_nan = FALSE, na1st = FALSE;
-    if(TYPEOF(x) == INTSXP) {
+    switch(TYPEOF(x)) {
+    case INTSXP:
+	sorted = INTEGER_IS_SORTED(x);
+	if(!KNOWN_SORTED(sorted))
+	    error("sorted_any_duplicated got unsorted vector: this should not happen");
 	if(from_last) {
 	    SORTED_ANYDUP_NONNANS_FROM_LAST(0, XLENGTH(x), itmp, int, INTEGER);
 	} else {
 	    SORTED_ANYDUP_NONNANS_FROM_FIRST(0, XLENGTH(x), itmp, int, INTEGER);
 	}
-    } else if(TYPEOF(x) == REALSXP) {
+	break;
+    case REALSXP:
 	sorted = REAL_IS_SORTED(x);
 	if(!KNOWN_SORTED(sorted))
 	    error("sorted_any_duplicated got unsorted vector: this should not happen");
-	R_xlen_t numnas = sorted_real_count_NAs(x);
+	R_xlen_t numnas = sorted_real_count_NANs(x), napivot;
+	napivot = XLENGTH(x) - numnas;
 	na1st = KNOWN_NA_1ST(sorted);
+	// must check these in correct order because we return as soon as dup is found.
 	if(from_last) {
 	    if(na1st) {
-		SORTED_ANYDUP_NONNANS_FROM_LAST(numnas, XLENGTH(x) - numnas, rtmp, double, REAL);
-		SORTED_ANYDUP_NANS(0, numnas, PARTIAL_REV, nb-1, i >=0, i--);
+		SORTED_ANYDUP_NONNANS_FROM_LAST(numnas, napivot, rtmp, double, REAL);
+		SORTED_ANYDUP_NANS(0, numnas, PARTIAL_REV, nb - 1, i >=0, i--);
 	    } else {
-		SORTED_ANYDUP_NANS(XLENGTH(x) - numnas -1, numnas, PARTIAL_REV, nb - 1, i >= 0, i--);
-		SORTED_ANYDUP_NONNANS_FROM_LAST(0, XLENGTH(x) - numnas, rtmp, double, REAL);
+		SORTED_ANYDUP_NANS(napivot, numnas, PARTIAL_REV, nb - 1, i >= 0, i--);
+		SORTED_ANYDUP_NONNANS_FROM_LAST(0, napivot, rtmp, double, REAL);
 	    }
 	} else { // !from_last
 	    if(na1st) {
 		SORTED_ANYDUP_NANS(0, numnas, PARTIAL, 0, i < nb, i++);
-		SORTED_ANYDUP_NONNANS_FROM_FIRST(numnas, XLENGTH(x) - numnas, rtmp, double, REAL);
+		SORTED_ANYDUP_NONNANS_FROM_FIRST(numnas, napivot, rtmp, double, REAL);
 	    } else {
-		SORTED_ANYDUP_NONNANS_FROM_FIRST(0, XLENGTH(x) - numnas, rtmp, double, REAL);
-		SORTED_ANYDUP_NANS(XLENGTH(x) - numnas -1, numnas, PARTIAL, 0, i < nb, i++);
+		SORTED_ANYDUP_NONNANS_FROM_FIRST(0, napivot, rtmp, double, REAL);
+		SORTED_ANYDUP_NANS(napivot, numnas, PARTIAL, 0, i < nb, i++);
 	    }
-	}
+	} //from_last
+	break;
+    default:
+	error("sorted_Duplicated got unsupported type %d: this should not happen", TYPEOF(x));
     }
     return 0;
 }
+
+#undef SORTED_ANYDUP_NONNANS_FROM_LAST
+#undef SORTED_ANYDUP_NONNANS_FRO_FIRST
+#undef SORTED_ANYDUP_NANS
+
 
 /* simpler version of the above : return 1-based index of first, or 0 : */
 R_xlen_t any_duplicated(SEXP x, Rboolean from_last)
@@ -865,9 +903,7 @@ R_xlen_t any_duplicated(SEXP x, Rboolean from_last)
     if (!isVector(x)) error(_("'duplicated' applies only to vectors"));
     R_xlen_t i, n = XLENGTH(x);
 
-    if(ALTREP(x) && 
-       ((TYPEOF(x) == INTSXP && KNOWN_SORTED(INTEGER_IS_SORTED(x))) ||
-    	(TYPEOF(x) == REALSXP && KNOWN_SORTED(REAL_IS_SORTED(x))))) {
+    if(DUP_KNOWN_SORTED(x)) {
     	return sorted_any_duplicated(x, from_last);
     }
 
@@ -887,12 +923,14 @@ R_xlen_t any_duplicated(SEXP x, Rboolean from_last)
     return result;
 }
 
+#undef DUP_KNOWN_SORTED
+
 
 static SEXP duplicated3(SEXP x, SEXP incomp, Rboolean from_last, int nmax)
 {
     SEXP ans;
     int *v, j, m;
-    
+
     if (!isVector(x)) error(_("'duplicated' applies only to vectors"));
     R_xlen_t i, n = XLENGTH(x);
     DUPLICATED_INIT;
@@ -973,25 +1011,23 @@ R_xlen_t any_duplicated3(SEXP x, SEXP incomp, Rboolean from_last)
 #undef DUPLICATED_INIT
 
 
-/* .Internal(duplicated(x))	  [op=0]
-  .Internal(unique(x))		  [op=1]
-   .Internal(anyDuplicated(x))	  [op=2]
+/* .Internal(   duplicated(x, incomparables, fromLast, nmax))  [op=0]
+   .Internal(       unique(x, incomparables, fromLast, nmax))  [op=1]
+   .Internal(anyDuplicated(x, incomparables, fromLast      ))  [op=2]
 */
 SEXP attribute_hidden do_duplicated(SEXP call, SEXP op, SEXP args, SEXP env)
 {
-    SEXP x, incomp, dup, ans;
-    int fromLast, nmax = NA_INTEGER;
+    SEXP x, dup, ans;
     R_xlen_t i, k, n;
 
     checkArity(op, args);
     x = CAR(args);
-    incomp = CADR(args);
+    SEXP incomp = CADR(args);
     if (length(CADDR(args)) < 1)
 	error(_("'fromLast' must be length 1"));
-    fromLast = asLogical(CADDR(args));
+    int fromLast = asLogical(CADDR(args));
     if (fromLast == NA_LOGICAL)
 	error(_("'fromLast' must be TRUE or FALSE"));
-
     Rboolean fL = (Rboolean) fromLast;
 
     /* handle zero length vectors, and NULL */
@@ -1005,6 +1041,7 @@ SEXP attribute_hidden do_duplicated(SEXP call, SEXP op, SEXP args, SEXP env)
 	      (PRIMVAL(op) == 0 ? "duplicated" :
 	       (PRIMVAL(op) == 1 ? "unique" : /* 2 */ "anyDuplicated")));
     }
+    int nmax = NA_INTEGER;
     if (PRIMVAL(op) <= 1) {
 	nmax = asInteger(CADDDR(args));
 	if (nmax != NA_INTEGER && nmax <= 0)
@@ -1182,6 +1219,30 @@ static SEXP match_transform(SEXP s, SEXP env)
     return duplicate(s);
 }
 
+/* assumes that x does not have any element in bytes encoding */
+static SEXP asUTF8(SEXP x)
+{
+    R_xlen_t nx = xlength(x);
+    SEXP ux = NULL;
+    for(R_xlen_t i = 0; i < nx; i++) {
+	SEXP xi = STRING_ELT(x, i);
+	if (!IS_ASCII(xi) && !IS_UTF8(xi)) {
+	    if (!ux) {
+		ux = PROTECT(allocVector(STRSXP, nx));
+		for(R_xlen_t j = 0; j < i; j++)
+		    SET_STRING_ELT(ux, j, STRING_ELT(x, j));
+	    }
+	    SET_STRING_ELT(ux, i, mkCharCE(translateCharUTF8(xi), CE_UTF8));
+	} else if (ux)
+	    SET_STRING_ELT(ux, i, xi);
+    }
+    if (ux) {
+	UNPROTECT(1);
+	return ux;
+    } else
+	return x;
+}
+    
 // workhorse of R's match() and hence also  " ix %in% itable "
 SEXP match5(SEXP itable, SEXP ix, int nmatch, SEXP incomp, SEXP env)
 {
@@ -1311,6 +1372,10 @@ SEXP match5(SEXP itable, SEXP ix, int nmatch, SEXP incomp, SEXP env)
 			break;
 		    }
 		}
+	    }
+	    if(useUTF8) {
+		x = PROTECT(asUTF8(x)); nprot++;
+		table = PROTECT(asUTF8(table)); nprot++;
 	    }
 	    data.useUTF8 = useUTF8;
 	    data.useCache = useCache;
